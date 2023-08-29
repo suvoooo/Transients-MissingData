@@ -162,6 +162,27 @@ def train_GP_and_eval(model, data_obj, passband, new_time, likelihood, num_itera
 	observed_pred = observed_pred.mean
 	return observed_pred
 
+# Define a function to plot a 2D confussion matrix
+def plot_cm(model, cm_percent, dataset):
+	# Plot the heatmap
+	plt.imshow(cm_percent, cmap="Blues")
+	# Add colorbar
+	plt.colorbar()
+	# Add axis labels
+	plt.xlabel("Predicted Label")
+	plt.ylabel("True Label")
+	plt.xticks(np.arange(len(model.labeling_order)), model.labeling_order, rotation=45)
+	plt.yticks(np.arange(len(model.labeling_order)), model.labeling_order)
+	# Add title
+	plt.title("Confusion Matrix " + dataset)
+# Add numerical values on top of the cells
+	for i in range(cm_percent.shape[0]):
+		for j in range(cm_percent.shape[1]):
+			plt.text(j, i, round(cm_percent[i, j], 3), ha='center', va='center', color='black')
+	# Save the plot
+	plt.savefig("Images/confusion_matrix_" + dataset + ".png")
+	plt.close("all")
+
 
 
 

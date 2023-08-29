@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+from sklearn.metrics import confusion_matrix
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -215,7 +216,7 @@ class ConvClassifier_2(nn.Module):
 
 # TransformerClassifier
 class TransformerClassifier(nn.Module):
-	def __init__(self, input_dim, n_classes, d_model, nhead, num_layers, weights_tensor, DTYPE, device, labeling_order = (6, 15, 16, 42, 52, 53, 62, 64, 65, 67, 88, 90, 92, 95)):
+	def __init__(self, input_dim, n_classes, d_model, nhead, num_layers, weights_tensor, DTYPE, device, with_errors = False, multiply_errors = False, labeling_order = (6, 15, 16, 42, 52, 53, 62, 64, 65, 67, 88, 90, 92, 95)):
 		super(TransformerClassifier, self).__init__()
 		self.input_dim = input_dim
 		self.n_classes = n_classes
@@ -226,8 +227,10 @@ class TransformerClassifier(nn.Module):
 		self.weights_tensor = weights_tensor
 		self.DTYPE = DTYPE
 		self.device = device
+		self.with_errors, self.multiply_errors = with_errors, multiply_errors
 		
-		self.encoder = nn.Linear(input_dim, d_model).to(device)
+#		self.linear_encoder = nn.Linear(input_dim, d_model).to(device)
+		self.conv_encoder = nn.Conv1d(input_dim, d_model, kernel_size = 1).to(device)
 		self.positional_encoding = self._generate_positional_encoding(self.d_model).to(device)
 		self.transformer = nn.Transformer(
 			d_model=d_model,
@@ -242,6 +245,7 @@ class TransformerClassifier(nn.Module):
 		self.accuracy_training, self.accuracy_val = [], []
 		# Define criterion
 #		self.criterion = utils.MulticlassCrossEntropyLoss()
+#		self.criterion = nn.CrossEntropyLoss(weight = self.weights_tensor)
 		self.criterion = nn.CrossEntropyLoss()
 	def _generate_positional_encoding(self, d_model, max_len=5000):
 		position = torch.arange(0, max_len).unsqueeze(1)
@@ -258,26 +262,43 @@ class TransformerClassifier(nn.Module):
 		one_hot[0, label_index] = 1
 		return one_hot
 	def forward(self, x):
+		if self.multiply_errors == True:
+			# Data with the least error gets weighted the most
+			x = torch.sqrt( (1 / (x[:,2:3,:,:] + 1e-8) ) ) * x[:,1:2,:,:]
+			x = x[:,0,:,:]
 		batch_size = x.size(0)
-		x = self.encoder(x)
+#		x = self.linear_encoder(x)
+		x = self.conv_encoder(x.permute(0, 2, 1)).permute(0,2,1)
 		x = x + self.positional_encoding[:x.size(0), :]
 		x = self.transformer(x,x)
 		x = self.fc(x)
 		x = x.mean(dim = 1, keepdim = False).squeeze(0)  # Average pooling over the time dimension
 		return F.softmax(x, dim=1)
 	def compute_metrics(self, X, Y, bs, nb):
+		if self.multiply_errors == True:
+			X = X[:,:,:]
+		else:
+			X = X[:,1,:]
+			X_error = X[:,2,:]
 		y_pred_list, y_true_list = [], []
 		real_labeling = torch.cat( [ self.one_hot_encode(label_ground = Y[i] ) for i in range(Y.shape[0]) ], dim = 0 ).to(self.device)
 		for i in tqdm(range(nb)):
-			y_pred = torch.argmax( self( X[i*bs:(i+1)*bs,1,:] ), dim = 1 ).view(-1,1)
+			if self.with_errors == False:
+				y_pred = torch.argmax( self( X[i*bs:(i+1)*bs] ), dim = 1 ).view(-1,1)
+			else:
+				y_pred = torch.argmax( self( torch.cat( (X[i*bs:(i+1)*bs], X_error[i*bs:(i+1)*bs]), dim = 2 ) ), dim = 1 ).view(-1,1)
 			y_true = torch.argmax( real_labeling[i*bs:(i+1)*bs], dim = 1 ).view(-1,1)
 			y_pred_list.append( y_pred )
 			y_true_list.append( y_true )
 		y_pred_list = torch.cat( y_pred_list, dim = 0 )
 		y_true_list = torch.cat( y_true_list, dim = 0 )
 		# Metrics
+		## Raw accuracy
 		accuracy = (y_pred_list == y_true_list).sum() / y_pred_list.shape[0]
-		return accuracy
+		y_pred_numpy, y_true_numpy = y_pred_list.view(1,-1).detach().cpu().numpy()[0], y_true_list.view(1,-1).detach().cpu().numpy()[0]
+		cm = confusion_matrix(y_true_numpy, y_pred_numpy)
+#		cm_percent = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+		return accuracy, cm
 	def train_step(self, X, Y, optimizer):
 		real_labeling = torch.cat( [ self.one_hot_encode(label_ground = Y[i] ) for i in range(Y.shape[0]) ], dim = 0 ).to(self.device)
 		output = self(X)
