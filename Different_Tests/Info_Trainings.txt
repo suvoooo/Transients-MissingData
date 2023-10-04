@@ -13,7 +13,7 @@
 - Test_4_multiply_errors:
 	- Test with a transformer using as input the brightness multiplied by the inverse of the square root of the uncertainty obtained from the Gaussian interpolation process, i.e., ( 1/sqrt(error) ) * brightness. Therefore, there will be only one input of 6 channels.
 - Test_4:
-	- Same test as 'Test_3' but considering the same weight for all labels.
+	- Same test as 'Test_3' but considering the same weight for all labels and the entire dataset (considering both galactic and extragalactic data).
 
 All these tests have been done for the GALACTIC data. Furthermore, we have considered, regarding the loss function, a weighting that goes in an inverse manner with the frequency of each class thereby giving more 'importance' to those classes with less representation within the dataset.
 

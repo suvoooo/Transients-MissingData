@@ -245,8 +245,8 @@ class TransformerClassifier(nn.Module):
 		self.accuracy_training, self.accuracy_val = [], []
 		# Define criterion
 #		self.criterion = utils.MulticlassCrossEntropyLoss()
-#		self.criterion = nn.CrossEntropyLoss(weight = self.weights_tensor)
-		self.criterion = nn.CrossEntropyLoss()
+		self.criterion = nn.CrossEntropyLoss(weight = self.weights_tensor)
+#		self.criterion = nn.CrossEntropyLoss()
 	def _generate_positional_encoding(self, d_model, max_len=5000):
 		position = torch.arange(0, max_len).unsqueeze(1)
 		div_term = torch.exp(torch.arange(0, d_model, 2) * -(math.log(10000.0) / d_model))

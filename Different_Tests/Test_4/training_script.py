@@ -20,7 +20,7 @@ DTYPE = torch.float32
 
 print("Loading data...")
 # Import data
-hf = h5py.File("../../Data/GP_galactic_data.h5", "r")
+hf = h5py.File("../../Data/GP_entire_data.h5", "r")
 
 X_training = torch.tensor( np.array(hf.get("X_training")), dtype = DTYPE ).to(device)
 Y_training = torch.tensor( np.array(hf.get("Y_training")), dtype = DTYPE ).to(device)
