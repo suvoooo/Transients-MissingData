@@ -214,6 +214,175 @@ class ConvClassifier_2(nn.Module):
 		optimizer.zero_grad(set_to_none = True)
 		return loss
 
+# TransformerClassifier with Gaussian uncertainty as weight for the brightness and photoz through a fully connected.
+class TransformerClassifier_with_errors_and_photoz(nn.Module):
+	def __init__(self, input_dim, n_classes, d_model, nhead, num_layers, weights_tensor, DTYPE, device, with_errors = False, multiply_errors = False, labeling_order = (6, 15, 16, 42, 52, 53, 62, 64, 65, 67, 88, 90, 92, 95)):
+		super(TransformerClassifier_with_errors_and_photoz, self).__init__()
+		self.input_dim = input_dim
+		self.n_classes = n_classes
+		self.d_model = d_model
+		self.nhead = nhead
+		self.num_layers = num_layers
+		self.labeling_order = labeling_order
+		self.weights_tensor = weights_tensor
+		self.DTYPE = DTYPE
+		self.device = device
+		self.with_errors, self.multiply_errors = with_errors, multiply_errors
+		
+#		self.linear_encoder = nn.Linear(input_dim, d_model).to(device)
+		self.conv_encoder = nn.Conv1d(input_dim, d_model, kernel_size = 1).to(device)
+		self.positional_encoding = self._generate_positional_encoding(self.d_model).to(device)
+		self.transformer = nn.Transformer(
+			d_model=d_model,
+			nhead=nhead,
+			num_encoder_layers=num_layers,
+			num_decoder_layers=num_layers,
+		).to(device)
+		self.fc = nn.Linear(d_model, n_classes).to(device)
+		# Photoz
+		self.fc_photoz_1 = nn.Linear(1, n_classes).to(device)
+		self.fc_photoz_2 = nn.Linear(2, 1).to(device)
+		# Define lists to save losses
+		self.loss_training_hist, self.loss_validation_hist = [], []
+		# Define lists to save metrics
+		self.accuracy_training, self.accuracy_val = [], []
+		# Define criterion
+		self.criterion = nn.CrossEntropyLoss(weight = self.weights_tensor)
+	def _generate_positional_encoding(self, d_model, max_len=5000):
+		position = torch.arange(0, max_len).unsqueeze(1)
+		div_term = torch.exp(torch.arange(0, d_model, 2) * -(math.log(10000.0) / d_model))
+		pe = torch.zeros(max_len, 1, d_model)
+		pe[:, 0, 0::2] = torch.sin(position * div_term)
+		pe[:, 0, 1::2] = torch.cos(position * div_term)
+		
+		return pe
+	def one_hot_encode(self, label_ground):
+		num_classes = len(self.labeling_order)
+		label_index = self.labeling_order.index(label_ground)
+		one_hot = torch.zeros(1, num_classes)
+		one_hot[0, label_index] = 1
+		return one_hot
+	def forward(self, x, photoz):
+		# Data with the least error gets weighted the most
+		x = torch.sqrt( (1 / (x[:,2:3,:,:] + 1e-8) ) ) * x[:,1:2,:,:]
+		x = x[:,0,:,:]
+		batch_size = x.size(0)
+		x = self.conv_encoder(x.permute(0, 2, 1)).permute(0,2,1)
+		x = x + self.positional_encoding[:x.size(0), :]
+		x = self.transformer(x,x)
+		x = self.fc(x)
+		x = x.mean(dim = 1, keepdim = False).squeeze(0)  # Average pooling over the time dimension
+		# Photoz DNN
+		photoz = self.fc_photoz_1(photoz)
+		x = torch.stack( (x, photoz), dim = 2 )
+		x = self.fc_photoz_2(x).squeeze(2)
+		return F.softmax(x, dim=1)
+	def compute_metrics(self, X, Y, photoz, bs, nb):
+		y_pred_list, y_true_list = [], []
+		real_labeling = torch.cat( [ self.one_hot_encode(label_ground = Y[i] ) for i in range(Y.shape[0]) ], dim = 0 ).to(self.device)
+		for i in tqdm(range(nb)):
+			y_pred = torch.argmax( self( X[i*bs:(i+1)*bs], photoz[i*bs:(i+1)*bs] ), dim = 1 ).view(-1,1)
+			y_true = torch.argmax( real_labeling[i*bs:(i+1)*bs], dim = 1 ).view(-1,1)
+			y_pred_list.append( y_pred )
+			y_true_list.append( y_true )
+		y_pred_list = torch.cat( y_pred_list, dim = 0 )
+		y_true_list = torch.cat( y_true_list, dim = 0 )
+		# Metrics
+		## Raw accuracy
+		accuracy = (y_pred_list == y_true_list).sum() / y_pred_list.shape[0]
+		y_pred_numpy, y_true_numpy = y_pred_list.view(1,-1).detach().cpu().numpy()[0], y_true_list.view(1,-1).detach().cpu().numpy()[0]
+		cm = confusion_matrix(y_true_numpy, y_pred_numpy)
+		return accuracy, cm
+	def train_step(self, X, Y, photoz, optimizer):
+		real_labeling = torch.cat( [ self.one_hot_encode(label_ground = Y[i] ) for i in range(Y.shape[0]) ], dim = 0 ).to(self.device)
+		output = self(X, photoz)
+		loss = self.criterion(output, real_labeling)
+		loss.backward()
+		optimizer.step()
+		optimizer.zero_grad(set_to_none = True)
+		return loss
+
+# TransformerClassifier with Gaussian uncertainty as weight for the brightness.
+class TransformerClassifier_with_errors(nn.Module):
+	def __init__(self, input_dim, n_classes, d_model, nhead, num_layers, weights_tensor, DTYPE, device, with_errors = False, multiply_errors = False, labeling_order = (6, 15, 16, 42, 52, 53, 62, 64, 65, 67, 88, 90, 92, 95)):
+		super(TransformerClassifier_with_errors, self).__init__()
+		self.input_dim = input_dim
+		self.n_classes = n_classes
+		self.d_model = d_model
+		self.nhead = nhead
+		self.num_layers = num_layers
+		self.labeling_order = labeling_order
+		self.weights_tensor = weights_tensor
+		self.DTYPE = DTYPE
+		self.device = device
+		self.with_errors, self.multiply_errors = with_errors, multiply_errors
+		
+#		self.linear_encoder = nn.Linear(input_dim, d_model).to(device)
+		self.conv_encoder = nn.Conv1d(input_dim, d_model, kernel_size = 1).to(device)
+		self.positional_encoding = self._generate_positional_encoding(self.d_model).to(device)
+		self.transformer = nn.Transformer(
+			d_model=d_model,
+			nhead=nhead,
+			num_encoder_layers=num_layers,
+			num_decoder_layers=num_layers,
+		).to(device)
+		self.fc = nn.Linear(d_model, n_classes).to(device)
+		# Define lists to save losses
+		self.loss_training_hist, self.loss_validation_hist = [], []
+		# Define lists to save metrics
+		self.accuracy_training, self.accuracy_val = [], []
+		# Define criterion
+		self.criterion = nn.CrossEntropyLoss(weight = self.weights_tensor)
+	def _generate_positional_encoding(self, d_model, max_len=5000):
+		position = torch.arange(0, max_len).unsqueeze(1)
+		div_term = torch.exp(torch.arange(0, d_model, 2) * -(math.log(10000.0) / d_model))
+		pe = torch.zeros(max_len, 1, d_model)
+		pe[:, 0, 0::2] = torch.sin(position * div_term)
+		pe[:, 0, 1::2] = torch.cos(position * div_term)
+		
+		return pe
+	def one_hot_encode(self, label_ground):
+		num_classes = len(self.labeling_order)
+		label_index = self.labeling_order.index(label_ground)
+		one_hot = torch.zeros(1, num_classes)
+		one_hot[0, label_index] = 1
+		return one_hot
+	def forward(self, x):
+		# Data with the least error gets weighted the most
+		x = torch.sqrt( (1 / (x[:,2:3,:,:] + 1e-8) ) ) * x[:,1:2,:,:]
+		x = x[:,0,:,:]
+		batch_size = x.size(0)
+		x = self.conv_encoder(x.permute(0, 2, 1)).permute(0,2,1)
+		x = x + self.positional_encoding[:x.size(0), :]
+		x = self.transformer(x,x)
+		x = self.fc(x)
+		x = x.mean(dim = 1, keepdim = False).squeeze(0)  # Average pooling over the time dimension
+		return F.softmax(x, dim=1)
+	def compute_metrics(self, X, Y, bs, nb):
+		y_pred_list, y_true_list = [], []
+		real_labeling = torch.cat( [ self.one_hot_encode(label_ground = Y[i] ) for i in range(Y.shape[0]) ], dim = 0 ).to(self.device)
+		for i in tqdm(range(nb)):
+			y_pred = torch.argmax( self( X[i*bs:(i+1)*bs] ), dim = 1 ).view(-1,1)
+			y_true = torch.argmax( real_labeling[i*bs:(i+1)*bs], dim = 1 ).view(-1,1)
+			y_pred_list.append( y_pred )
+			y_true_list.append( y_true )
+		y_pred_list = torch.cat( y_pred_list, dim = 0 )
+		y_true_list = torch.cat( y_true_list, dim = 0 )
+		# Metrics
+		## Raw accuracy
+		accuracy = (y_pred_list == y_true_list).sum() / y_pred_list.shape[0]
+		y_pred_numpy, y_true_numpy = y_pred_list.view(1,-1).detach().cpu().numpy()[0], y_true_list.view(1,-1).detach().cpu().numpy()[0]
+		cm = confusion_matrix(y_true_numpy, y_pred_numpy)
+		return accuracy, cm
+	def train_step(self, X, Y, optimizer):
+		real_labeling = torch.cat( [ self.one_hot_encode(label_ground = Y[i] ) for i in range(Y.shape[0]) ], dim = 0 ).to(self.device)
+		output = self(X)
+		loss = self.criterion(output, real_labeling)
+		loss.backward()
+		optimizer.step()
+		optimizer.zero_grad(set_to_none = True)
+		return loss
+
 # TransformerClassifier
 class TransformerClassifier(nn.Module):
 	def __init__(self, input_dim, n_classes, d_model, nhead, num_layers, weights_tensor, DTYPE, device, with_errors = False, multiply_errors = False, labeling_order = (6, 15, 16, 42, 52, 53, 62, 64, 65, 67, 88, 90, 92, 95)):
@@ -302,6 +471,111 @@ class TransformerClassifier(nn.Module):
 	def train_step(self, X, Y, optimizer):
 		real_labeling = torch.cat( [ self.one_hot_encode(label_ground = Y[i] ) for i in range(Y.shape[0]) ], dim = 0 ).to(self.device)
 		output = self(X)
+		loss = self.criterion(output, real_labeling)
+		loss.backward()
+		optimizer.step()
+		optimizer.zero_grad(set_to_none = True)
+		return loss
+
+# TransformerClassifier with FFT information. 2 inputs
+class TransformerClassifier_with_FFT(nn.Module):
+	def __init__(self, input_dim, n_classes, d_model, nhead, num_layers, weights_tensor, DTYPE, device, with_errors = False, multiply_errors = False, labeling_order = (6, 15, 16, 42, 52, 53, 62, 64, 65, 67, 88, 90, 92, 95)):
+		super(TransformerClassifier_with_FFT, self).__init__()
+		self.input_dim = input_dim
+		self.n_classes = n_classes
+		self.d_model = d_model
+		self.nhead = nhead
+		self.num_layers = num_layers
+		self.labeling_order = labeling_order
+		self.weights_tensor = weights_tensor
+		self.DTYPE = DTYPE
+		self.device = device
+		self.with_errors, self.multiply_errors = with_errors, multiply_errors
+		
+#		self.linear_encoder = nn.Linear(input_dim, d_model).to(device)
+		########################################################################################################
+		# Transformer for the time information
+		self.conv_encoder_1 = nn.Conv1d(input_dim, d_model, kernel_size = 1).to(device)
+		self.positional_encoding_1 = self._generate_positional_encoding(self.d_model).to(device)
+		self.transformer_1 = nn.Transformer(
+			d_model=d_model,
+			nhead=nhead,
+			num_encoder_layers=num_layers,
+			num_decoder_layers=num_layers,
+		).to(device)
+		self.fc_1 = nn.Linear(d_model, n_classes).to(device)
+		# Embedding linear
+		self.fc_embedding = nn.Linear(2*n_classes, n_classes)
+		########################################################################################################
+		# Define lists to save losses
+		self.loss_training_hist, self.loss_validation_hist = [], []
+		# Define lists to save metrics
+		self.accuracy_training, self.accuracy_val = [], []
+		# Define criterion
+		self.criterion = nn.CrossEntropyLoss(weight = self.weights_tensor)
+	def _generate_positional_encoding(self, d_model, max_len=5000):
+		position = torch.arange(0, max_len).unsqueeze(1)
+		div_term = torch.exp(torch.arange(0, d_model, 2) * -(math.log(10000.0) / d_model))
+		pe = torch.zeros(max_len, 1, d_model)
+		pe[:, 0, 0::2] = torch.sin(position * div_term)
+		pe[:, 0, 1::2] = torch.cos(position * div_term)
+		
+		return pe
+	def one_hot_encode(self, label_ground):
+		num_classes = len(self.labeling_order)
+		label_index = self.labeling_order.index(label_ground)
+		one_hot = torch.zeros(1, num_classes)
+		one_hot[0, label_index] = 1
+		return one_hot
+	def forward(self, x1, x2):
+		# Time information
+		batch_size1 = x1.size(0)
+		x1 = self.conv_encoder_1(x1.permute(0, 2, 1)).permute(0,2,1)
+		x1 = x1 + self.positional_encoding_1[:x1.size(0), :]
+		x1 = self.transformer_1(x1,x1)
+		x1 = self.fc_1(x1)
+		# FFT information
+		batch_size2 = x2.size(0)
+		x2 = self.conv_encoder_1(x2.permute(0, 2, 1)).permute(0,2,1)
+		x2 = x2 + self.positional_encoding_1[:x2.size(0), :]
+		x2 = self.transformer_1(x2,x2)
+		x2 = self.fc_1(x2)
+		
+		# Embedding part
+		x = torch.concat( (x1, x2), dim = 2 )
+		x = self.fc_embedding(x)
+		x = x.mean(dim = 1, keepdim = False).squeeze(0)
+		
+		return F.softmax(x, dim=1)
+	def compute_metrics(self, X, Y, FFT, bs, nb):
+		if self.multiply_errors == True:
+			X = X
+		else:
+			X = X[:,1]
+			FFT = FFT[:,0]
+			X_error = X[:,2]
+		y_pred_list, y_true_list = [], []
+		real_labeling = torch.cat( [ self.one_hot_encode(label_ground = Y[i] ) for i in range(Y.shape[0]) ], dim = 0 ).to(self.device)
+		for i in tqdm(range(nb)):
+			if self.with_errors == False:
+				y_pred = torch.argmax( self( X[i*bs:(i+1)*bs], FFT[i*bs:(i+1)*bs] ), dim = 1 ).view(-1,1)
+			else:
+				y_pred = torch.argmax( self( torch.cat( (X[i*bs:(i+1)*bs], X_error[i*bs:(i+1)*bs]), dim = 2 ) ), dim = 1 ).view(-1,1)
+			y_true = torch.argmax( real_labeling[i*bs:(i+1)*bs], dim = 1 ).view(-1,1)
+			y_pred_list.append( y_pred )
+			y_true_list.append( y_true )
+		y_pred_list = torch.cat( y_pred_list, dim = 0 )
+		y_true_list = torch.cat( y_true_list, dim = 0 )
+		# Metrics
+		## Raw accuracy
+		accuracy = (y_pred_list == y_true_list).sum() / y_pred_list.shape[0]
+		y_pred_numpy, y_true_numpy = y_pred_list.view(1,-1).detach().cpu().numpy()[0], y_true_list.view(1,-1).detach().cpu().numpy()[0]
+		cm = confusion_matrix(y_true_numpy, y_pred_numpy)
+#		cm_percent = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+		return accuracy, cm
+	def train_step(self, X, Y, FFT, optimizer):
+		real_labeling = torch.cat( [ self.one_hot_encode(label_ground = Y[i] ) for i in range(Y.shape[0]) ], dim = 0 ).to(self.device)
+		output = self(X, FFT)
 		loss = self.criterion(output, real_labeling)
 		loss.backward()
 		optimizer.step()

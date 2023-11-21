@@ -167,8 +167,11 @@ id_objs_galactic = metadata_galactic["object_id"].values.tolist()
 id_objs_extragalactic = metadata_extragalactic["object_id"].values.tolist()
 
 # Filter objects
-data = data[data["object_id"].isin(id_objs_extragalactic)]
-metadata = metadata_extragalactic
+#data = data[data["object_id"].isin(id_objs_extragalactic)]
+#metadata = metadata_extragalactic
+
+data = data
+metadata = metadata
 
 # Rename filters
 data = remap_filters(df = data)
@@ -197,8 +200,8 @@ for i in tqdm( range( len(unique_obj_ids) ) ):
 	# Save the label
 	obs_metadata = metadata[metadata["object_id"] == unique_obj_ids[i]]
 	labels_list.append( int(obs_metadata["target"].values) )
-	hostgal_specz_list.append( float(obs_metadata["target"].values) )
-	hostgal_photoz_list.append( float(obs_metadata["target"].values) )
+	hostgal_specz_list.append( float(obs_metadata["hostgal_specz"].values) )
+	hostgal_photoz_list.append( float(obs_metadata["hostgal_photoz"].values) )
 	# Fit the interpolation model
 	gp_predict = fit_2d_gp(obs_single)
 	# Generate the sampling of times
@@ -240,8 +243,8 @@ random.seed(666)
 integer_list = list( range( data_features.shape[0] ) )
 random.shuffle(integer_list)
 ## Define the size of each of the three new lists
-size_training = int(len(integer_list) * 0.75)
-size_validation = int(len(integer_list) * 0.05)
+size_training = int(len(integer_list) * 0.70)
+size_validation = int(len(integer_list) * 0.1)
 size_test = int(len(integer_list) * 0.2)
 
 X_training, Y_training, specz_training, photoz_training = data_features[:size_training], labels_list[:size_training], hostgal_specz_list[:size_training], hostgal_photoz_list[:size_training]
@@ -255,7 +258,7 @@ print(X_val.shape, Y_val.shape, specz_val.shape, photoz_val.shape)
 print(X_test.shape, Y_test.shape, specz_test.shape, photoz_test.shape)
 
 # Export datasets
-hf = h5py.File("Data/GP_extragalactic_data.h5", "w")
+hf = h5py.File("Data/GP_entire_data.h5", "w")
 
 hf.create_dataset( "X_training", data = X_training )
 hf.create_dataset( "Y_training", data = Y_training )

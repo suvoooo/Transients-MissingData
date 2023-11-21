@@ -37,6 +37,8 @@ print("Training shape: ", X_training.shape, Y_training.shape)
 print("Validation shape: ", X_val.shape, Y_val.shape)
 print("Test shape: ", X_test.shape, Y_test.shape)
 
+sys.exit()
+
 # Define batch_size and compute n_batches
 bs, bs_val = 10, 10
 n_b, n_b_val = int( X_training.shape[0] / bs ), int( X_val.shape[0] / bs_val )
