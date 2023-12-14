@@ -222,9 +222,10 @@ def compute_metrics_single_input(model, X, Y, bs, nb):
 	report = classification_report(y_true_numpy.tolist(), y_pred_numpy.tolist(), target_names = labeling_order_string, output_dict = True)
 	## Confusion matrix
 	cm = confusion_matrix(y_true_numpy, y_pred_numpy)
+	cm_percent = cm / (cm.sum(axis=1))[:, np.newaxis]
 	## Raw accuracy
 	accuracy = (y_pred_list == y_true_list).sum() / y_pred_list.shape[0]
-	return report, cm, accuracy
+	return report, cm_percent, accuracy
 
 # Define a function to one-hot encode the labeling
 def one_hot_encode(model, label_ground):
