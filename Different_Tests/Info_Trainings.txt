@@ -22,6 +22,12 @@
 	- We use galactic and extragalactic data. We add Gaussian uncertainty as ( 1/sqrt(error) ) * brightness.
 - Test_8:
 	- We use galactic and extragalactic data. We add Gaussian uncertainty as ( 1/sqrt(error) ) * brightness. We consider also photoz information as a new DNN.
+- Test_9:
+	- We use galactic and extragalactic data. We add Gaussian uncertainty as a weight similarly to what we have done in Test_8. Everything is the same except we are not introducing the redshift as a new information and passing it through a FC layer but we are repeating the data for all the time steps and adding the redshift as a "new channel" to the previous 6 that we had before.
+- Test_10:
+	- We use galactic and extragalactic data. We are using TCN model over the flux data itself, so we are using neither redshift nor uncertainty information.
+- Test_11:
+	- We use galactic and extragalactic data. We use a vanilla transformer classifier model. New functions to compute the metrics have been defined and are being used.
 
-All these tests have been done for the GALACTIC data. Furthermore, we have considered, regarding the loss function, a weighting that goes in an inverse manner with the frequency of each class thereby giving more 'importance' to those classes with less representation within the dataset.
+Furthermore, we have considered, regarding the loss function, a weighting that goes in an inverse manner with the frequency of each class thereby giving more 'importance' to those classes with less representation within the dataset.
 

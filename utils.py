@@ -11,6 +11,7 @@ import h5py
 import random
 import math
 import gpytorch
+from sklearn.metrics import confusion_matrix, classification_report
 
 class MulticlassCrossEntropyLoss(nn.Module):
 	def __init__(self):
@@ -175,13 +176,63 @@ def plot_cm(model, cm_percent, dataset):
 	plt.yticks(np.arange(len(model.labeling_order)), model.labeling_order)
 	# Add title
 	plt.title("Confusion Matrix " + dataset)
-# Add numerical values on top of the cells
+	# Add numerical values on top of the cells
 	for i in range(cm_percent.shape[0]):
 		for j in range(cm_percent.shape[1]):
 			plt.text(j, i, round(cm_percent[i, j], 3), ha='center', va='center', color='black')
 	# Save the plot
 	plt.savefig("Images/confusion_matrix_" + dataset + ".png")
 	plt.close("all")
+
+# Define a function to plot a classification report from sklearn
+def plot_report(report, dataset):
+	df = pd.DataFrame(report).transpose()
+	
+	plt.figure(figsize=(8, 6))
+	plt.subplots_adjust(left=0.2, top=0.8, bottom=0.2)
+	plt.table(cellText=df.values, colLabels=df.columns, rowLabels=df.index, loc='center', cellLoc='center', colColours=['lightgray']*len(df.columns), bbox=[0, 0, 1, 1])
+	plt.axis('off')  # Hide axis
+	plt.title('Classification Report')
+	
+	plt.savefig("Images/classification_report_" + dataset + ".png")
+	plt.close("all")
+
+# Define a function to compute several metrics
+## model: model to use
+## X: Input tensor
+## Y: Targets tensor
+## bs, nb: batch size and number of batches, respectively.
+def compute_metrics_single_input(model, X, Y, bs, nb):
+	logits_pred_list, y_pred_list, y_true_list = [], [], []
+	real_labeling = torch.cat( [ one_hot_encode(model = model, label_ground = Y[i]) for i in range(Y.shape[0]) ], dim = 0 ).to(model.device)
+	for i in tqdm(range(nb)):
+#		logits_pred = model( X[i*bs:(i+1)*bs] )
+		y_pred = torch.argmax( model( X[i*bs:(i+1)*bs] ), dim = 1 ).view(-1,1)
+		y_true = torch.argmax( real_labeling[i*bs:(i+1)*bs], dim = 1 ).view(-1,1)
+#		logits_pred_list.append( logits_pred )
+		y_pred_list.append( y_pred )
+		y_true_list.append( y_true )
+#	logits_pred_list = torch.cat( logits_pred_list, dim = 0 )
+	y_pred_list = torch.cat( y_pred_list, dim = 0 )
+	y_true_list = torch.cat( y_true_list, dim = 0 )
+	
+	# Metrics
+	y_pred_numpy, y_true_numpy = y_pred_list.view(1,-1).detach().cpu().numpy()[0], y_true_list.view(1,-1).detach().cpu().numpy()[0]
+	labeling_order_string = [str(label) for label in model.labeling_order]
+	report = classification_report(y_true_numpy.tolist(), y_pred_numpy.tolist(), target_names = labeling_order_string, output_dict = True)
+	## Confusion matrix
+	cm = confusion_matrix(y_true_numpy, y_pred_numpy)
+	## Raw accuracy
+	accuracy = (y_pred_list == y_true_list).sum() / y_pred_list.shape[0]
+	return report, cm, accuracy
+
+# Define a function to one-hot encode the labeling
+def one_hot_encode(model, label_ground):
+	num_classes = len(model.labeling_order)
+	label_index = model.labeling_order.index(label_ground)
+	one_hot = torch.zeros(1, num_classes)
+	one_hot[0, label_index] = 1
+	return one_hot
 
 
 

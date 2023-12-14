@@ -13,7 +13,9 @@ import random
 import math
 import gpytorch
 import utils
+from torch.nn.utils import weight_norm
 
+# =======================================================================================================================
 # Gaussian Interpolator model
 # Define the GPyTorch ExactGP model
 class ExactGPModel(gpytorch.models.ExactGP):
@@ -27,6 +29,9 @@ class ExactGPModel(gpytorch.models.ExactGP):
 		mean = self.mean_module(x)
 		covar = self.covar_module(x)
 		return gpytorch.distributions.MultivariateNormal(mean, covar)
+
+# =======================================================================================================================
+# CONVOLUTIONAL MODELS
 
 # Convolutional Model Classifier
 class ConvClassifier(nn.Module):
@@ -76,12 +81,6 @@ class ConvClassifier(nn.Module):
 		self.accuracy_training, self.accuracy_val = [], []
 		# Define criterion
 		self.criterion = utils.MulticlassCrossEntropyLoss()
-	def one_hot_encode(self, label_ground):
-		num_classes = len(self.labeling_order)
-		label_index = self.labeling_order.index(label_ground)
-		one_hot = torch.zeros(1, num_classes)
-		one_hot[0, label_index] = 1
-		return one_hot
 	def forward(self, x):
 		# Forward method will consist of a first part of transformation of the input:
 		## Identity mapping: return the original input
@@ -119,19 +118,6 @@ class ConvClassifier(nn.Module):
 		concatenated = self.fc_out(concatenated)
 		logits = F.softmax(concatenated, dim = 1)
 		return logits
-	def compute_metrics(self, X, Y, bs, nb):
-		y_pred_list, y_true_list = [], []
-		real_labeling = torch.cat( [ self.one_hot_encode(label_ground = Y[i] ) for i in range(Y.shape[0]) ], dim = 0 ).to(self.device)
-		for i in tqdm(range(nb)):
-			y_pred = torch.argmax( self( X[i*bs:(i+1)*bs,1,:].to(self.device) ), dim = 1 ).view(-1,1)
-			y_true = torch.argmax( real_labeling[i*bs:(i+1)*bs], dim = 1 ).view(-1,1)
-			y_pred_list.append( y_pred )
-			y_true_list.append( y_true )
-		y_pred_list = torch.cat( y_pred_list, dim = 0 )
-		y_true_list = torch.cat( y_true_list, dim = 0 )
-		# Metrics
-		accuracy = (y_pred_list == y_true_list).sum() / y_pred_list.shape[0]
-		return accuracy
 	def train_step(self, X, Y, optimizer):
 		real_labeling = torch.cat( [ self.one_hot_encode(label_ground = Y[i] ) for i in range(Y.shape[0]) ], dim = 0 ).to(self.device)
 		output = self( X )
@@ -178,12 +164,6 @@ class ConvClassifier_2(nn.Module):
 		self.relu4 = nn.ReLU()
 		
 		self.fc2 = nn.Linear(256, num_classes)
-	def one_hot_encode(self, label_ground):
-		num_classes = len(self.labeling_order)
-		label_index = self.labeling_order.index(label_ground)
-		one_hot = torch.zeros(1, num_classes)
-		one_hot[0, label_index] = 1
-		return one_hot
 	def forward(self, x):
 		x = self.conv1(x)
 		x = self.relu1(x)
@@ -214,6 +194,9 @@ class ConvClassifier_2(nn.Module):
 		optimizer.zero_grad(set_to_none = True)
 		return loss
 
+# =======================================================================================================================
+# TRANSFORMER-LIKE MODELS
+
 # TransformerClassifier with Gaussian uncertainty as weight for the brightness and photoz through a fully connected.
 class TransformerClassifier_with_errors_and_photoz(nn.Module):
 	def __init__(self, input_dim, n_classes, d_model, nhead, num_layers, weights_tensor, DTYPE, device, with_errors = False, multiply_errors = False, labeling_order = (6, 15, 16, 42, 52, 53, 62, 64, 65, 67, 88, 90, 92, 95)):
@@ -239,9 +222,6 @@ class TransformerClassifier_with_errors_and_photoz(nn.Module):
 			num_decoder_layers=num_layers,
 		).to(device)
 		self.fc = nn.Linear(d_model, n_classes).to(device)
-		# Photoz
-		self.fc_photoz_1 = nn.Linear(1, n_classes).to(device)
-		self.fc_photoz_2 = nn.Linear(2, 1).to(device)
 		# Define lists to save losses
 		self.loss_training_hist, self.loss_validation_hist = [], []
 		# Define lists to save metrics
@@ -256,43 +236,19 @@ class TransformerClassifier_with_errors_and_photoz(nn.Module):
 		pe[:, 0, 1::2] = torch.cos(position * div_term)
 		
 		return pe
-	def one_hot_encode(self, label_ground):
-		num_classes = len(self.labeling_order)
-		label_index = self.labeling_order.index(label_ground)
-		one_hot = torch.zeros(1, num_classes)
-		one_hot[0, label_index] = 1
-		return one_hot
 	def forward(self, x, photoz):
+		photoz = photoz.unsqueeze(2).repeat(1, 1, x.shape[2], 1).permute((1,0,2,3))
 		# Data with the least error gets weighted the most
 		x = torch.sqrt( (1 / (x[:,2:3,:,:] + 1e-8) ) ) * x[:,1:2,:,:]
 		x = x[:,0,:,:]
+		x = torch.cat( (x,photoz[:,0,:,:]), dim = 2 )
 		batch_size = x.size(0)
 		x = self.conv_encoder(x.permute(0, 2, 1)).permute(0,2,1)
 		x = x + self.positional_encoding[:x.size(0), :]
 		x = self.transformer(x,x)
 		x = self.fc(x)
 		x = x.mean(dim = 1, keepdim = False).squeeze(0)  # Average pooling over the time dimension
-		# Photoz DNN
-		photoz = self.fc_photoz_1(photoz)
-		x = torch.stack( (x, photoz), dim = 2 )
-		x = self.fc_photoz_2(x).squeeze(2)
 		return F.softmax(x, dim=1)
-	def compute_metrics(self, X, Y, photoz, bs, nb):
-		y_pred_list, y_true_list = [], []
-		real_labeling = torch.cat( [ self.one_hot_encode(label_ground = Y[i] ) for i in range(Y.shape[0]) ], dim = 0 ).to(self.device)
-		for i in tqdm(range(nb)):
-			y_pred = torch.argmax( self( X[i*bs:(i+1)*bs], photoz[i*bs:(i+1)*bs] ), dim = 1 ).view(-1,1)
-			y_true = torch.argmax( real_labeling[i*bs:(i+1)*bs], dim = 1 ).view(-1,1)
-			y_pred_list.append( y_pred )
-			y_true_list.append( y_true )
-		y_pred_list = torch.cat( y_pred_list, dim = 0 )
-		y_true_list = torch.cat( y_true_list, dim = 0 )
-		# Metrics
-		## Raw accuracy
-		accuracy = (y_pred_list == y_true_list).sum() / y_pred_list.shape[0]
-		y_pred_numpy, y_true_numpy = y_pred_list.view(1,-1).detach().cpu().numpy()[0], y_true_list.view(1,-1).detach().cpu().numpy()[0]
-		cm = confusion_matrix(y_true_numpy, y_pred_numpy)
-		return accuracy, cm
 	def train_step(self, X, Y, photoz, optimizer):
 		real_labeling = torch.cat( [ self.one_hot_encode(label_ground = Y[i] ) for i in range(Y.shape[0]) ], dim = 0 ).to(self.device)
 		output = self(X, photoz)
@@ -341,12 +297,6 @@ class TransformerClassifier_with_errors(nn.Module):
 		pe[:, 0, 1::2] = torch.cos(position * div_term)
 		
 		return pe
-	def one_hot_encode(self, label_ground):
-		num_classes = len(self.labeling_order)
-		label_index = self.labeling_order.index(label_ground)
-		one_hot = torch.zeros(1, num_classes)
-		one_hot[0, label_index] = 1
-		return one_hot
 	def forward(self, x):
 		# Data with the least error gets weighted the most
 		x = torch.sqrt( (1 / (x[:,2:3,:,:] + 1e-8) ) ) * x[:,1:2,:,:]
@@ -358,22 +308,6 @@ class TransformerClassifier_with_errors(nn.Module):
 		x = self.fc(x)
 		x = x.mean(dim = 1, keepdim = False).squeeze(0)  # Average pooling over the time dimension
 		return F.softmax(x, dim=1)
-	def compute_metrics(self, X, Y, bs, nb):
-		y_pred_list, y_true_list = [], []
-		real_labeling = torch.cat( [ self.one_hot_encode(label_ground = Y[i] ) for i in range(Y.shape[0]) ], dim = 0 ).to(self.device)
-		for i in tqdm(range(nb)):
-			y_pred = torch.argmax( self( X[i*bs:(i+1)*bs] ), dim = 1 ).view(-1,1)
-			y_true = torch.argmax( real_labeling[i*bs:(i+1)*bs], dim = 1 ).view(-1,1)
-			y_pred_list.append( y_pred )
-			y_true_list.append( y_true )
-		y_pred_list = torch.cat( y_pred_list, dim = 0 )
-		y_true_list = torch.cat( y_true_list, dim = 0 )
-		# Metrics
-		## Raw accuracy
-		accuracy = (y_pred_list == y_true_list).sum() / y_pred_list.shape[0]
-		y_pred_numpy, y_true_numpy = y_pred_list.view(1,-1).detach().cpu().numpy()[0], y_true_list.view(1,-1).detach().cpu().numpy()[0]
-		cm = confusion_matrix(y_true_numpy, y_pred_numpy)
-		return accuracy, cm
 	def train_step(self, X, Y, optimizer):
 		real_labeling = torch.cat( [ self.one_hot_encode(label_ground = Y[i] ) for i in range(Y.shape[0]) ], dim = 0 ).to(self.device)
 		output = self(X)
@@ -385,7 +319,7 @@ class TransformerClassifier_with_errors(nn.Module):
 
 # TransformerClassifier
 class TransformerClassifier(nn.Module):
-	def __init__(self, input_dim, n_classes, d_model, nhead, num_layers, weights_tensor, DTYPE, device, with_errors = False, multiply_errors = False, labeling_order = (6, 15, 16, 42, 52, 53, 62, 64, 65, 67, 88, 90, 92, 95)):
+	def __init__(self, input_dim, n_classes, d_model, nhead, num_layers, weights_tensor, DTYPE, device, labeling_order = (6, 15, 16, 42, 52, 53, 62, 64, 65, 67, 88, 90, 92, 95)):
 		super(TransformerClassifier, self).__init__()
 		self.input_dim = input_dim
 		self.n_classes = n_classes
@@ -396,9 +330,7 @@ class TransformerClassifier(nn.Module):
 		self.weights_tensor = weights_tensor
 		self.DTYPE = DTYPE
 		self.device = device
-		self.with_errors, self.multiply_errors = with_errors, multiply_errors
 		
-#		self.linear_encoder = nn.Linear(input_dim, d_model).to(device)
 		self.conv_encoder = nn.Conv1d(input_dim, d_model, kernel_size = 1).to(device)
 		self.positional_encoding = self._generate_positional_encoding(self.d_model).to(device)
 		self.transformer = nn.Transformer(
@@ -424,52 +356,21 @@ class TransformerClassifier(nn.Module):
 		pe[:, 0, 1::2] = torch.cos(position * div_term)
 		
 		return pe
-	def one_hot_encode(self, label_ground):
-		num_classes = len(self.labeling_order)
-		label_index = self.labeling_order.index(label_ground)
-		one_hot = torch.zeros(1, num_classes)
-		one_hot[0, label_index] = 1
-		return one_hot
-	def forward(self, x):
-		if self.multiply_errors == True:
-			# Data with the least error gets weighted the most
-			x = torch.sqrt( (1 / (x[:,2:3,:,:] + 1e-8) ) ) * x[:,1:2,:,:]
-			x = x[:,0,:,:]
-		batch_size = x.size(0)
-#		x = self.linear_encoder(x)
-		x = self.conv_encoder(x.permute(0, 2, 1)).permute(0,2,1)
-		x = x + self.positional_encoding[:x.size(0), :]
-		x = self.transformer(x,x)
-		x = self.fc(x)
-		x = x.mean(dim = 1, keepdim = False).squeeze(0)  # Average pooling over the time dimension
-		return F.softmax(x, dim=1)
-	def compute_metrics(self, X, Y, bs, nb):
-		if self.multiply_errors == True:
-			X = X[:,:,:]
-		else:
-			X = X[:,1,:]
-			X_error = X[:,2,:]
-		y_pred_list, y_true_list = [], []
-		real_labeling = torch.cat( [ self.one_hot_encode(label_ground = Y[i] ) for i in range(Y.shape[0]) ], dim = 0 ).to(self.device)
-		for i in tqdm(range(nb)):
-			if self.with_errors == False:
-				y_pred = torch.argmax( self( X[i*bs:(i+1)*bs] ), dim = 1 ).view(-1,1)
-			else:
-				y_pred = torch.argmax( self( torch.cat( (X[i*bs:(i+1)*bs], X_error[i*bs:(i+1)*bs]), dim = 2 ) ), dim = 1 ).view(-1,1)
-			y_true = torch.argmax( real_labeling[i*bs:(i+1)*bs], dim = 1 ).view(-1,1)
-			y_pred_list.append( y_pred )
-			y_true_list.append( y_true )
-		y_pred_list = torch.cat( y_pred_list, dim = 0 )
-		y_true_list = torch.cat( y_true_list, dim = 0 )
-		# Metrics
-		## Raw accuracy
-		accuracy = (y_pred_list == y_true_list).sum() / y_pred_list.shape[0]
-		y_pred_numpy, y_true_numpy = y_pred_list.view(1,-1).detach().cpu().numpy()[0], y_true_list.view(1,-1).detach().cpu().numpy()[0]
-		cm = confusion_matrix(y_true_numpy, y_pred_numpy)
-#		cm_percent = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
-		return accuracy, cm
-	def train_step(self, X, Y, optimizer):
-		real_labeling = torch.cat( [ self.one_hot_encode(label_ground = Y[i] ) for i in range(Y.shape[0]) ], dim = 0 ).to(self.device)
+	def forward(self, input):
+		flux = input[:,0,:,:]
+		batch_size = flux.size(0)
+		
+		flux = self.conv_encoder(flux.permute(0, 2, 1)).permute(0,2,1)
+		flux = flux + self.positional_encoding[:flux.size(0), :]
+		flux = self.transformer(flux,flux)
+		flux = self.fc(flux)
+		flux = flux.mean(dim = 1, keepdim = False).squeeze(0)  # Average pooling over the time dimension
+		# Compute the logits
+		logits = F.softmax(flux, dim = 1)
+		return logits
+	def train_step(self, X, Y, optimizer, epoch):
+		self.optimizer, self.epoch = optimizer, epoch
+		real_labeling = torch.cat( [ utils.one_hot_encode(model = self, label_ground = Y[i] ) for i in range(Y.shape[0]) ], dim = 0 ).to(self.device)
 		output = self(X)
 		loss = self.criterion(output, real_labeling)
 		loss.backward()
@@ -521,12 +422,6 @@ class TransformerClassifier_with_FFT(nn.Module):
 		pe[:, 0, 1::2] = torch.cos(position * div_term)
 		
 		return pe
-	def one_hot_encode(self, label_ground):
-		num_classes = len(self.labeling_order)
-		label_index = self.labeling_order.index(label_ground)
-		one_hot = torch.zeros(1, num_classes)
-		one_hot[0, label_index] = 1
-		return one_hot
 	def forward(self, x1, x2):
 		# Time information
 		batch_size1 = x1.size(0)
@@ -547,32 +442,6 @@ class TransformerClassifier_with_FFT(nn.Module):
 		x = x.mean(dim = 1, keepdim = False).squeeze(0)
 		
 		return F.softmax(x, dim=1)
-	def compute_metrics(self, X, Y, FFT, bs, nb):
-		if self.multiply_errors == True:
-			X = X
-		else:
-			X = X[:,1]
-			FFT = FFT[:,0]
-			X_error = X[:,2]
-		y_pred_list, y_true_list = [], []
-		real_labeling = torch.cat( [ self.one_hot_encode(label_ground = Y[i] ) for i in range(Y.shape[0]) ], dim = 0 ).to(self.device)
-		for i in tqdm(range(nb)):
-			if self.with_errors == False:
-				y_pred = torch.argmax( self( X[i*bs:(i+1)*bs], FFT[i*bs:(i+1)*bs] ), dim = 1 ).view(-1,1)
-			else:
-				y_pred = torch.argmax( self( torch.cat( (X[i*bs:(i+1)*bs], X_error[i*bs:(i+1)*bs]), dim = 2 ) ), dim = 1 ).view(-1,1)
-			y_true = torch.argmax( real_labeling[i*bs:(i+1)*bs], dim = 1 ).view(-1,1)
-			y_pred_list.append( y_pred )
-			y_true_list.append( y_true )
-		y_pred_list = torch.cat( y_pred_list, dim = 0 )
-		y_true_list = torch.cat( y_true_list, dim = 0 )
-		# Metrics
-		## Raw accuracy
-		accuracy = (y_pred_list == y_true_list).sum() / y_pred_list.shape[0]
-		y_pred_numpy, y_true_numpy = y_pred_list.view(1,-1).detach().cpu().numpy()[0], y_true_list.view(1,-1).detach().cpu().numpy()[0]
-		cm = confusion_matrix(y_true_numpy, y_pred_numpy)
-#		cm_percent = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
-		return accuracy, cm
 	def train_step(self, X, Y, FFT, optimizer):
 		real_labeling = torch.cat( [ self.one_hot_encode(label_ground = Y[i] ) for i in range(Y.shape[0]) ], dim = 0 ).to(self.device)
 		output = self(X, FFT)
@@ -581,6 +450,9 @@ class TransformerClassifier_with_FFT(nn.Module):
 		optimizer.step()
 		optimizer.zero_grad(set_to_none = True)
 		return loss
+
+# =======================================================================================================================
+# LSTM-LIKE MODELS
 
 # Define a recurrent model to classify
 class LSTMClassifier(nn.Module):
@@ -602,34 +474,110 @@ class LSTMClassifier(nn.Module):
 		
 		self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
 		self.fc = nn.Linear(hidden_size, num_classes)
-	def one_hot_encode(self, label_ground):
-		num_classes = len(self.labeling_order)
-		label_index = self.labeling_order.index(label_ground)
-		one_hot = torch.zeros(1, num_classes)
-		one_hot[0, label_index] = 1
-		return one_hot
 	def forward(self, x):
 		h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
 		c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
 		out, _ = self.lstm(x, (h0, c0))
 		out = self.fc(out[:, -1, :])
 		return F.softmax(out, dim=1)
-	def compute_metrics(self, X, Y, bs, nb):
-		y_pred_list, y_true_list = [], []
-		real_labeling = torch.cat( [ self.one_hot_encode(label_ground = Y[i] ) for i in range(Y.shape[0]) ], dim = 0 ).to(self.device)
-		for i in tqdm(range(nb)):
-			y_pred = torch.argmax( self( X[i*bs:(i+1)*bs,1,:].to(self.device) ), dim = 1 ).view(-1,1)
-			y_true = torch.argmax( real_labeling[i*bs:(i+1)*bs], dim = 1 ).view(-1,1)
-			y_pred_list.append( y_pred )
-			y_true_list.append( y_true )
-		y_pred_list = torch.cat( y_pred_list, dim = 0 )
-		y_true_list = torch.cat( y_true_list, dim = 0 )
-		# Metrics
-		accuracy = (y_pred_list == y_true_list).sum() / y_pred_list.shape[0]
-		return accuracy
 	def train_step(self, X, Y, optimizer):
 		real_labeling = torch.cat( [ self.one_hot_encode(label_ground = Y[i] ) for i in range(Y.shape[0]) ], dim = 0 ).to(self.device)
 		output = self( X )
+		loss = self.criterion(output, real_labeling)
+		loss.backward()
+		optimizer.step()
+		optimizer.zero_grad(set_to_none = True)
+		return loss
+
+# =======================================================================================================================
+# TEMPORAL CONVOLUTIONAL MODELS
+
+class Chomp1d(nn.Module):
+	def __init__(self, chomp_size):
+		super(Chomp1d, self).__init__()
+		self.chomp_size = chomp_size
+	def forward(self, x):
+		return x[:, :, :-self.chomp_size].contiguous()
+
+
+class TemporalBlock(nn.Module):
+	def __init__(self, n_inputs, n_outputs, kernel_size, stride, dilation, padding, dropout=0.2):
+		super(TemporalBlock, self).__init__()
+		self.conv1 = weight_norm(nn.Conv1d(n_inputs, n_outputs, kernel_size, stride=stride, padding=padding, dilation=dilation))
+		self.chomp1 = Chomp1d(padding)
+		self.relu1 = nn.ReLU()
+		self.dropout1 = nn.Dropout(dropout)
+		
+		self.conv2 = weight_norm(nn.Conv1d(n_outputs, n_outputs, kernel_size, stride=stride, padding=padding, dilation=dilation))
+		self.chomp2 = Chomp1d(padding)
+		self.relu2 = nn.ReLU()
+		self.dropout2 = nn.Dropout(dropout)
+		
+		self.net = nn.Sequential(self.conv1, self.chomp1, self.relu1, self.dropout1, self.conv2, self.chomp2, self.relu2, self.dropout2)
+		self.downsample = nn.Conv1d(n_inputs, n_outputs, 1) if n_inputs != n_outputs else None
+		self.relu = nn.ReLU()
+		self.init_weights()
+	def init_weights(self):
+		self.conv1.weight.data.normal_(0, 0.01)
+		self.conv2.weight.data.normal_(0, 0.01)
+		if self.downsample is not None:
+			self.downsample.weight.data.normal_(0, 0.01)
+	def forward(self, x):
+		out = self.net(x)
+		res = x if self.downsample is None else self.downsample(x)
+		return self.relu(out + res)
+
+
+# Define the temporal convolutional network that will use the temporal blocks previously defined.
+class TemporalConvNet(nn.Module):
+	def __init__(self, num_inputs, num_channels, kernel_size=2, dropout=0.2):
+		super(TemporalConvNet, self).__init__()
+		layers = []
+		num_levels = len(num_channels)
+		for i in range(num_levels):
+			dilation_size = 2 ** i
+			in_channels = num_inputs if i == 0 else num_channels[i-1]
+			out_channels = num_channels[i]
+			layers += [TemporalBlock(in_channels, out_channels, kernel_size, stride=1, dilation=dilation_size, padding=(kernel_size-1) * dilation_size, dropout=dropout)]
+		self.network = nn.Sequential(*layers)
+	def forward(self, x):
+		return self.network(x)
+
+
+# Define now the final model. This model will contain one (or several) temporal convolutional networks, which will contain
+# at the same time, diverse temporal blocks.
+class TCN(nn.Module):
+	def __init__(self, input_size, output_size, num_channels, kernel_size, dropout, weights_tensor, labeling_order, device, DTYPE):
+		super(TCN, self).__init__()
+		self.conv_encoder = nn.Conv1d(input_size, 32, kernel_size = 1).to(device)
+		self.tcn = TemporalConvNet(32, num_channels, kernel_size=kernel_size, dropout=dropout)
+		self.linear = nn.Linear(num_channels[-1], output_size)
+		self.weights_tensor = weights_tensor
+		self.labeling_order = labeling_order
+		self.device = device
+		self.DTYPE = DTYPE
+		# Define lists to save losses
+		self.loss_training_hist, self.loss_validation_hist = [], []
+		# Define lists to save metrics
+		self.accuracy_training, self.accuracy_val = [], []
+		# Define criterion
+		#self.criterion = nn.CrossEntropyLoss(weight = self.weights_tensor)
+		self.criterion = nn.NLLLoss(weight = self.weights_tensor)
+	def forward(self, inputs):
+		# Inputs will have shape of (N,3,5000,6). We will extract the first variable which corresponds to the flux itself.
+		x = inputs[:,0,:,:]
+		# Inputs must have dimension (N_samples, Channels, Length). Therefore, we have to permute the dimensions.
+		x = self.conv_encoder(x.permute(0, 2, 1))
+		y1 = self.tcn(x)
+		o = self.linear(y1[:, :, -1])
+		# Output will have dimension of (N,n_classes).
+		logits = nn.LogSoftmax(dim = 1)(o)
+		return logits
+	def train_step(self, X, Y, optimizer):
+		real_labeling = torch.cat( [ self.one_hot_encode(label_ground = Y[i] ) for i in range(Y.shape[0]) ], dim = 0 ).to(self.device)
+		# If we are using the NLL Loss we should provide indices instead of one-hot encoded labels. Comment the next line if it is not the case:
+		real_labeling = torch.argmax(real_labeling, dim = 1)
+		output = self(X)
 		loss = self.criterion(output, real_labeling)
 		loss.backward()
 		optimizer.step()

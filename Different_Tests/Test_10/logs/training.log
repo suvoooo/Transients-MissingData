@@ -1,0 +1,10 @@
+Is PyTorch using GPU? True
+Loading data...
+<KeysViewHDF5 ['X_test', 'X_training', 'X_val', 'Y_test', 'Y_training', 'Y_val', 'photoz_test', 'photoz_training', 'photoz_val', 'specz_test', 'specz_training', 'specz_val']>
+<KeysViewHDF5 ['X_test_FFT', 'X_training_FFT', 'X_val_FFT']>
+Training shape:  torch.Size([5493, 3, 5000, 6]) torch.Size([5493, 1, 5000, 6]) torch.Size([5493, 1]) torch.Size([5493, 1])
+Validation shape:  torch.Size([784, 3, 5000, 6]) torch.Size([1571, 1, 5000, 6]) torch.Size([784, 1]) torch.Size([784, 1])
+Test shape:  torch.Size([1571, 3, 5000, 6]) torch.Size([784, 1, 5000, 6]) torch.Size([1571, 1]) torch.Size([1571, 1])
+batch_size:  20 , n_batches:  274
+labeling_order:  [6, 15, 16, 42, 52, 53, 62, 64, 65, 67, 88, 90, 92, 95]
+Starting optimization...
